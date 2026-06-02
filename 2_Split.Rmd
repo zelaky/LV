@@ -1,0 +1,310 @@
+---
+title: "Smoking Cessation: Data Split"
+author: "Zoë E. Laky"
+date: "20250603"
+output: html_notebook
+---
+
+## Installing & Loading Packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LV")
+
+required_packages <- c(
+  'tidyverse', 'caret', 'visdat', 'moments', 'arsenal',
+  'sjPlot', 'sjmisc', 'parameters', 'DataExplorer', 'car', 'naniar'
+)
+
+#install new packages
+new_packages <- setdiff(required_packages, rownames(installed.packages()))
+if (length(new_packages)) install.packages(new_packages)
+
+#load packages
+invisible(lapply(required_packages, require, character.only = TRUE))
+
+#citations
+sapply(c("tidyverse", "caret", "sjPlot"), citation)
+
+#working directory
+cat("Working Directory:", getwd(), "\n")
+sessionInfo()
+
+rm(required_packages, new_packages)
+```
+
+## Loading Data
+```{r}
+cessationR1 <- read.csv('cessationR1.csv', header = T, na.strings = "", stringsAsFactors = T) #importing data
+cessationR1[cessationR1 == "NA"] <- NA
+
+head(cessationR1) #view first few rows of data
+dim(cessationR1) #dimensions of dataset
+table(is.na(cessationR1)) #total missing values ("NA") in dataset 
+```
+
+## Variable Types 
+```{r}
+cessationR1 <- cessationR1 %>%
+  mutate(across(-ID, as.numeric))
+
+factor_vars <- c(
+  "QuA1Rc", "MentholBRc", "Gender", "PRBQOEBRc1", "RaceRc", "OtherStudiesRc", 
+  "Eciglifetime", "EcigpastmonthBRc", "EthnicityRc", "FTND2", "FTND3", "FTND5", "FTND6", 
+  "BrandBRc1", "Cig7", "ContemplationStatus", "EducationRc", "FlavorBRc1", "FTND1",  
+  "IncomeRc", "JobRc", "OccupationRc", "SCQOEBRc", "SGOOEBRc", "Smokedmarijuana", 
+  "SoC1BRc", "SoC2BRc", "SoC5BRc", "SSEQ10BRc", "SSEQ12BRc", "SSEQ14BRc", "SSEQ16BRc", 
+  "SSEQ18BRc", "SSEQ20BRc", "SSEQ22BRc", "SSEQ24BRc", "SSEQ26BRc", "SSEQ28BRc", 
+  "SSEQ2BRc", "SSEQ30BRc", "SSEQ32BRc", "SSEQ34BRc", "SSEQ4BRc", "SSEQ6BRc", 
+  "SSEQ8BRc", "SSS10", "SSS11", "SSS12", "SSS13", "SSS14", "SSS15", "SSS16", "SSS17", 
+  "SSS18", "SSS19", "SSS1", "SSS20", "SSS21", "SSS22", "SSS23", "SSS24", "SSS25", 
+  "SSS26", "SSS27", "SSS28", "SSS29", "SSS2", "SSS30", "SSS31", "SSS32", "SSS33", 
+  "SSS34", "SSS35", "SSS36", "SSS37", "SSS38", "SSS39", "SSS3", "SSS40", "SSS4", 
+  "SSS5", "SSS6", "SSS7", "SSS8", "SSS9", "study_condition"
+)
+
+cessationR1 <- cessationR1 %>%
+  mutate(across(all_of(factor_vars), as.factor))
+
+rm(factor_vars)
+```
+
+#Missing
+```{r}
+vis_miss(cessationR1)
+
+overall_miss <- mean(is.na(cessationR1)) * 100
+cat("Overall missing data: ", round(overall_miss, 2), "%\n")
+
+colmiss <- colMeans(is.na(cessationR1)) * 100
+colmiss <- enframe(colmiss, name = "Variable", value = "MissingPercent")
+
+rowmiss <- rowMeans(is.na(cessationR1)) * 100
+rowmiss <- tibble(Row = seq_along(rowmiss), MissingPercent = rowmiss)
+
+complete_rows <- mean(complete.cases(cessationR1)) * 100
+cat("Percentage of complete rows: ", round(complete_rows, 2), "%\n")
+```
+
+#Split Data (Train and Test)
+```{r}
+seed <- 844
+set.seed(seed)
+datasplit <- createDataPartition(cessationR1$QuA1Rc, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+View(datasplit)
+write.csv(datasplit, "/Desktop/LV/datasplit.csv", row.names=FALSE)
+
+cessationtrain <- cessationR1[datasplit, ]
+cessationtest <- cessationR1[-datasplit, ]
+
+write.csv(cessationtrain, "/Desktop/LV/cessationtrain.csv", row.names=FALSE)
+write.csv(cessationtest, "/Desktop/LV/cessationtest.csv", row.names=FALSE)
+
+set.seed(NULL)
+rm(datasplit, seed)
+```
+
+#Missing: Train
+```{r}
+vis_miss(cessationtrain)
+
+overall_miss <- mean(is.na(cessationtrain)) * 100
+cat("Overall missing data: ", round(overall_miss, 2), "%\n")
+
+colmiss <- colMeans(is.na(cessationtrain)) * 100
+colmiss <- enframe(colmiss, name = "Variable", value = "MissingPercent")
+
+rowmiss <- rowMeans(is.na(cessationtrain)) * 100
+rowmiss <- tibble(Row = seq_along(rowmiss), MissingPercent = rowmiss)
+
+complete_rows <- mean(complete.cases(cessationtrain)) * 100
+cat("Percentage of complete rows: ", round(complete_rows, 2), "%\n")
+```
+
+#Missing: Test
+```{r}
+vis_miss(cessationtest)
+
+overall_miss <- mean(is.na(cessationtest)) * 100
+cat("Overall missing data: ", round(overall_miss, 2), "%\n")
+
+colmiss <- colMeans(is.na(cessationtest)) * 100
+colmiss <- enframe(colmiss, name = "Variable", value = "MissingPercent")
+
+rowmiss <- rowMeans(is.na(cessationtest)) * 100
+rowmiss <- tibble(Row = seq_along(rowmiss), MissingPercent = rowmiss)
+
+complete_rows <- mean(complete.cases(cessationtest)) * 100
+cat("Percentage of complete rows: ", round(complete_rows, 2), "%\n")
+
+rm(colmiss, rowmiss, complete_rows, overall_miss)
+```
+
+#T-Tests
+```{r}
+num_vars <- names(cessationR1)[sapply(cessationR1, function(x) is.numeric(x) || is.integer(x))]
+
+t_results <- lapply(num_vars, function(var) {
+  train_vals <- cessationtrain[[var]]
+  test_vals <- cessationtest[[var]]
+  
+  df <- data.frame(
+    value = c(train_vals, test_vals),
+    group = factor(c(rep("train", length(train_vals)), rep("test", length(test_vals))))
+  )
+  df <- df[!is.na(df$value), ]
+  
+  if (length(unique(df$group)) == 2 && all(table(df$group) > 1)) {
+    lev <- leveneTest(value ~ group, data = df)
+    equal_var <- lev$`Pr(>F)`[1] > 0.05
+    
+    ttest <- t.test(value ~ group, data = df, var.equal = equal_var)
+    
+    data.frame(
+      variable = var,
+      train_mean = mean(train_vals, na.rm = TRUE),
+      test_mean = mean(test_vals, na.rm = TRUE),
+      p_value_ttest = ttest$p.value,
+      p_value_levene = lev$`Pr(>F)`[1],
+      equal_variance = equal_var
+    )
+  } else {
+    data.frame(
+      variable = var,
+      train_mean = NA,
+      test_mean = NA,
+      p_value_ttest = NA,
+      p_value_levene = NA,
+      equal_variance = NA
+    )
+  }
+})
+
+t_tests <- do.call(rbind, t_results)
+
+#FDR adjusted p-values with Benjamini-Hochberg
+t_tests$p_value_fdr <- p.adjust(t_tests$p_value_ttest, method = "fdr")
+t_tests <- t_tests[order(t_tests$p_value_fdr), ]
+
+write.csv(t_tests, "~/Desktop/LV/split_t_tests.csv", row.names=FALSE)
+
+rm(t_results, num_vars)
+```
+
+#One-Hot-Encode: Train
+```{r}
+num_cols <- names(cessationtrain)[sapply(cessationtrain, is.numeric)]
+num_cols <- union(c("QuA1Rc", "ID"), num_cols)
+cat_cols <- setdiff(names(cessationtrain), c(num_cols))
+  
+ohe <- dummyVars(~ ., data = cessationtrain[, cat_cols], fullRank = TRUE)
+cessationtrain_ohe <- as.data.frame(predict(ohe, newdata = cessationtrain[, cat_cols]))
+cessationtrain_ohe[] <- lapply(cessationtrain_ohe, function(col) factor(col, levels = c(0, 1)))
+
+cessationtrain_num <- cessationtrain[, num_cols]
+cessationtrain_num_ohe <- cbind(cessationtrain_num, cessationtrain_ohe)
+
+write.csv(cessationtrain_ohe, "/Desktop/LV/cessationtrain_ohe.csv", row.names=FALSE)
+write.csv(cessationtrain_num, "/Desktop/LV/cessationtrain_num.csv", row.names=FALSE)
+write.csv(cessationtrain_num_ohe, "~/Desktop/LV/cessationtrain_num_ohe.csv", row.names=FALSE)
+```
+
+#One-Hot-Encode: Test
+```{r}
+num_cols <- names(cessationtest)[sapply(cessationtest, is.numeric)]
+num_cols <- union(c("QuA1Rc", "ID"), num_cols)
+cat_cols <- setdiff(names(cessationtest), c(num_cols))
+  
+ohe <- dummyVars(~ ., data = cessationtest[, cat_cols], fullRank = TRUE)
+cessationtest_ohe <- as.data.frame(predict(ohe, newdata = cessationtest[, cat_cols]))
+cessationtest_ohe[] <- lapply(cessationtest_ohe, function(col) factor(col, levels = c(0, 1)))
+
+cessationtest_num <- cessationtest[, num_cols]
+cessationtest_num_ohe <- cbind(cessationtest_num, cessationtest_ohe)
+
+write.csv(cessationtest_ohe, "/Desktop/LV/cessationtest_ohe.csv", row.names=FALSE)
+write.csv(cessationtest_num, "/Desktop/LV/cessationtest_num.csv", row.names=FALSE)
+write.csv(cessationtest_num_ohe, "~/Desktop/LV/cessationtest_num_ohe.csv", row.names=FALSE)
+rm(ohe, cat_cols, num_cols)
+```
+
+#Fisher's Tests
+```{r}
+cat_vars_train <- names(cessationtrain_ohe)[sapply(cessationtrain_ohe, function(x) is.factor(x) || is.character(x))]
+cat_vars_test <- names(cessationtest_ohe)[sapply(cessationtest_ohe, function(x) is.factor(x) || is.character(x))]
+if (setequal(cat_vars_train, cat_vars_test)) {
+  cat("The lists are identical.\n")
+} else {
+  cat("The lists are NOT identical.\n")
+}
+  
+fisher_results <- lapply(cat_vars_train, function(var) {
+  train_vals <- cessationtrain_ohe[[var]]
+  test_vals  <- cessationtest_ohe[[var]]
+  
+  df <- data.frame(
+    value = c(as.character(train_vals), as.character(test_vals)),
+    group = factor(c(rep("train", length(train_vals)), rep("test", length(test_vals))))
+  )
+  df <- df[!is.na(df$value), ]
+  
+  if (length(unique(df$group)) == 2 && length(unique(df$value)) > 1) {
+    tbl <- table(df$value, df$group)
+    
+    if (all(dim(tbl) == 2) && all(rowSums(tbl) > 0) && all(colSums(tbl) > 0)) {
+      test <- fisher.test(tbl)
+      p_val <- test$p.value
+    } else {
+      warning(paste("Skipping", var, "- not a valid 2x2 table"))
+      p_val <- NA
+    }
+
+    return(data.frame(
+      variable = var,
+      p_value_fisher = p_val
+    ))
+  } else {
+    return(data.frame(
+      variable = var,
+      p_value_fisher = NA
+    ))
+  }
+})
+
+fisher_tests <- do.call(rbind, fisher_results)
+
+fisher_tests$p_value_fdr <- p.adjust(fisher_tests$p_value_fisher, method = "fdr")
+fisher_tests <- fisher_tests[order(fisher_tests$p_value_fdr), ]
+
+write.csv(fisher_tests, "~/Desktop/LV/split_fisher_tests.csv", row.names=FALSE)
+
+rm(fisher_results, cat_vars_train, cat_vars_test)
+```
+
+#Quit Attempt: Fisher's Test
+```{r}
+var <- "QuA1Rc"
+
+train_vals <- cessationtrain[[var]]
+test_vals <- cessationtest[[var]]
+
+df <- data.frame(
+  value = as.character(c(train_vals, test_vals)),
+  group = factor(c(rep("train", length(train_vals)), rep("test", length(test_vals))))
+)
+
+# Remove NAs
+df <- df[!is.na(df$value), ]
+
+# Create contingency table
+tbl <- table(df$value, df$group)
+
+# Check dimensions and run Fisher's exact test
+if (all(dim(tbl) == 2) && all(rowSums(tbl) > 0) && all(colSums(tbl) > 0)) {
+  test <- fisher.test(tbl)
+  print(test)
+} else {
+  warning("Table is not 2x2 or contains zero counts - Fisher's test not applied")
+}
+```

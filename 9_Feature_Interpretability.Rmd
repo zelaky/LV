@@ -1,0 +1,136 @@
+---
+title: "Smoking Cessation: Data Split"
+author: "Zoë E. Laky"
+date: "20250603"
+output: html_notebook
+---
+
+## Installing & Loading Packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LV")
+
+#install.packages("effectsize")
+library(effectsize)
+
+#install.packages("car")
+library(car)
+library(dplyr)
+```
+
+## Loading Training Data
+```{r}
+cessationtrain_p05_final <- read.csv("cessationtrain_p05_final.csv")
+cessationtrain_p05_final[cessationtrain_p05_final == "NA"] <- NA
+
+head(cessationtrain_p05_final) #view first few rows of data
+dim(cessationtrain_p05_final) #dimensions of dataset
+table(is.na(cessationtrain_p05_final)) #total missing values ("NA") in dataset 
+```
+
+## Variable Types 
+```{r}
+cessationtrain_p05_final <- cessationtrain_p05_final %>%
+  mutate(across(-ID, as.numeric))
+
+factor_vars <- c(
+  "QuA1Rc", "Cig7", "ContemplationStatus", "EducationRc", "SoC2BRc", "SoC5BRc", "SSEQ8BRc", "SSS17", "SSEQ6BRc")
+
+cessationtrain_p05_final <- cessationtrain_p05_final %>%
+  mutate(across(all_of(factor_vars), as.factor))
+
+rm(factor_vars)
+```
+
+#Training Chi-Square Test of Independence
+```{r}
+table(cessationtrain_p05_final$QuA1Rc) #1=quit, 2=no quit
+
+table <- table(cessationtrain_p05_final$ContemplationStatus, cessationtrain_p05_final$QuA1Rc)
+CS_result <- chisq.test(table)
+CS_result$expected
+
+CS_result$statistic
+CS_result$parameter
+CS_result$p.value
+CS_result$stdres #residual > 1.96: observed count is higher than expected; residual < -1.96: observed count is lower than expected
+
+#more likely to quit if reported "this week" or "in the next 30 days"; less likely to quit if reported "don’t plan to quit within the next 12 months"
+cramers_v(table, ci = 0.95)
+```
+
+#Training T-tests
+```{r}
+PRBQ1_levene <- leveneTest(PRBQ1 ~ QuA1Rc, data=cessationtrain_p05_final) #I will eat more
+PRBQ1_levene
+
+PRBQ1_result <- t.test(PRBQ1 ~ QuA1Rc, data=cessationtrain_p05_final, var.equal = TRUE, alternative = "two.sided", conf.level = 0.95)
+PRBQ1_result
+cohens_d(PRBQ1 ~ QuA1Rc, data=cessationtrain_p05_final, pooled_sd = TRUE)
+
+
+PRBQ14_levene <- leveneTest(PRBQ14 ~ QuA1Rc, data=cessationtrain_p05_final) #I will miss the taste of cigarettes.
+PRBQ14_levene
+
+PRBQ14_result <- t.test(PRBQ14 ~ QuA1Rc, data=cessationtrain_p05_final, var.equal = TRUE, alternative = "two.sided", conf.level = 0.95)
+PRBQ14_result
+cohens_d(PRBQ14 ~ QuA1Rc, data=cessationtrain_p05_final, pooled_sd = TRUE)
+```
+
+## Loading Testing Data
+```{r}
+cessationtest_p05_final <- read.csv("cessationtest_p05_final.csv")
+cessationtest_p05_final[cessationtest_p05_final == "NA"] <- NA
+
+head(cessationtest_p05_final) #view first few rows of data
+dim(cessationtest_p05_final) #dimensions of dataset
+table(is.na(cessationtest_p05_final)) #total missing values ("NA") in dataset 
+```
+
+## Variable Types 
+```{r}
+cessationtest_p05_final <- cessationtest_p05_final %>%
+  mutate(across(-ID, as.numeric))
+
+factor_vars <- c(
+  "QuA1Rc", "Cig7", "ContemplationStatus", "EducationRc", "SoC2BRc", "SoC5BRc", "SSEQ8BRc", "SSS17", "SSEQ6BRc")
+
+cessationtest_p05_final <- cessationtest_p05_final %>%
+  mutate(across(all_of(factor_vars), as.factor))
+
+rm(factor_vars)
+```
+
+#Testing Chi-Square Test of Independence
+```{r}
+table(cessationtest_p05_final$QuA1Rc) #1=quit, 2=no quit
+
+table <- table(cessationtest_p05_final$ContemplationStatus, cessationtest_p05_final$QuA1Rc)
+CS_result <- chisq.test(table)
+CS_result$expected
+
+CS_result$statistic
+CS_result$parameter
+CS_result$p.value
+CS_result$stdres #residual > 1.96: observed count is higher than expected; residual < -1.96: observed count is lower than expected
+
+#more likely to quit if reported "this week" or "in the next 30 days"; less likely to quit if reported "don’t plan to quit within the next 12 months"
+cramers_v(table, ci = 0.95)
+```
+
+#Testing T-tests
+```{r}
+PRBQ1_levene <- leveneTest(PRBQ1 ~ QuA1Rc, data=cessationtest_p05_final) #I will eat more
+PRBQ1_levene
+
+PRBQ1_result <- t.test(PRBQ1 ~ QuA1Rc, data=cessationtest_p05_final, var.equal = FALSE, alternative = "two.sided", conf.level = 0.95)
+PRBQ1_result
+cohens_d(PRBQ1 ~ QuA1Rc, data=cessationtest_p05_final, pooled_sd = FALSE)
+
+PRBQ14_levene <- leveneTest(PRBQ14 ~ QuA1Rc, data=cessationtest_p05_final) #I will miss the taste of cigarettes.
+PRBQ14_levene
+
+PRBQ14_result <- t.test(PRBQ14 ~ QuA1Rc, data=cessationtest_p05_final, var.equal = TRUE, alternative = "two.sided", conf.level = 0.95)
+PRBQ14_result
+cohens_d(PRBQ14 ~ QuA1Rc, data=cessationtest_p05_final, pooled_sd = TRUE)
+```

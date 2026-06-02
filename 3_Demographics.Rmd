@@ -1,0 +1,459 @@
+---
+title: "Smoking Cessation: Total Scores"
+author: "Zoë E. Laky"
+date: "20250603"
+output: html_notebook
+---
+## Installing & Loading Packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LV")
+
+required_packages <- c(
+  'tidyverse', 'caret', 'visdat', 'moments', 'arsenal',
+  'sjPlot', 'sjmisc', 'parameters', 'DataExplorer', 'car', 'naniar'
+)
+
+#install new packages
+new_packages <- setdiff(required_packages, rownames(installed.packages()))
+if (length(new_packages)) install.packages(new_packages)
+
+#load packages
+invisible(lapply(required_packages, require, character.only = TRUE))
+
+#citations
+sapply(c("tidyverse", "caret", "sjPlot"), citation)
+
+#working directory
+cat("Working Directory:", getwd(), "\n")
+sessionInfo()
+
+rm(required_packages, new_packages)
+```
+
+##Loading Data
+```{r}
+cessationD <- read.csv('LVDATA_FULL_8.11.19.csv', header = T, na.strings = "", stringsAsFactors = T) 
+cessationD[cessationD == "NA"] <- NA
+
+cessationtrain <- read.csv('cessationtrain.csv', header = T, na.strings = "", stringsAsFactors = T) 
+cessationtrain[cessationtrain == "NA"] <- NA
+
+cessationtrainD <- cessationD[cessationD$ID %in% cessationtrain$ID, ]
+cessationtrainD <- cessationtrainD %>%
+  mutate(across(-Age, as.character))
+
+cessationtest <- read.csv('cessationtest.csv', header = T, na.strings = "", stringsAsFactors = T) 
+cessationtest[cessationtest == "NA"] <- NA
+
+cessationtestD <- cessationD[cessationD$ID %in% cessationtest$ID, ]
+cessationtestD <- cessationtestD %>%
+  mutate(across(-Age, as.character))
+
+cessationD <- cessationD[cessationD$ID %in% union(cessationtrain$ID, cessationtest$ID), ]
+```
+
+##Full Sample
+```{r}
+cessationD %>%
+  summarise(
+    mean = round(mean(Age, na.rm = TRUE), 1),
+    sd = round(sd(Age, na.rm = TRUE), 1))
+
+cessationD %>%
+  count(Gender) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Race) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Ethnicity) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Education) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Occupation) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Job_1) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Job_2) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Job_3) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Job_4) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Job_5) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Job_6) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Job_7) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Job_8) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Job_9) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationD %>%
+  count(Income) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+```
+
+##Training Sample
+```{r}
+cessationtrainD %>%
+  summarise(
+    mean = round(mean(Age, na.rm = TRUE), 1),
+    sd = round(sd(Age, na.rm = TRUE), 1), 
+    range = round(range(Age, na.rm = TRUE), 1))
+
+cessationtrainD %>%
+  count(Gender) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Race) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Ethnicity) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Education) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Occupation) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Job_1) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Job_2) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Job_3) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Job_4) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Job_5) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Job_6) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Job_7) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Job_8) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Job_9) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtrainD %>%
+  count(Income) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+```
+
+##Testing Sample
+```{r}
+cessationtestD %>%
+  summarise(
+    mean = round(mean(Age, na.rm = TRUE), 1),
+    sd = round(sd(Age, na.rm = TRUE), 1), 
+    range = round(range(Age, na.rm = TRUE), 1))
+
+cessationtestD %>%
+  count(Gender) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Race) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Ethnicity) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Education) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Occupation) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Job_1) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Job_2) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Job_3) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Job_4) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Job_5) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Job_6) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Job_7) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Job_8) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Job_9) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+
+cessationtestD %>%
+  count(Income) %>%
+  mutate(percent = round(100 * n / sum(n), 1))
+```
+
+##Outcome by Training Demographics (Re-coded)
+```{r}
+leveneTest(Age ~ as.factor(QuA1Rc), data = cessationtrain)
+t.test(Age ~ QuA1Rc, data = cessationtrain, var.equal = TRUE)
+
+df <- na.omit(cessationtrain[, c("RaceRc", "QuA1Rc")])
+df$RaceRc <- as.factor(df$RaceRc)
+df$QuA1Rc <- as.factor(df$QuA1Rc)
+df$RaceRc <- droplevels(df$RaceRc)
+df$QuA1Rc <- droplevels(df$QuA1Rc)
+contingency_table <- table(df$RaceRc, df$QuA1Rc)
+chisq.test(contingency_table)
+
+df <- na.omit(cessationtrain[, c("EthnicityRc", "QuA1Rc")])
+df$EthnicityRc <- as.factor(df$EthnicityRc)
+df$QuA1Rc <- as.factor(df$QuA1Rc)
+df$EthnicityRc <- droplevels(df$EthnicityRc)
+df$QuA1Rc <- droplevels(df$QuA1Rc)
+contingency_table <- table(df$EthnicityRc, df$QuA1Rc)
+fisher.test(contingency_table)
+
+df <- na.omit(cessationtrain[, c("Gender", "QuA1Rc")])
+df$Gender <- as.factor(df$Gender)
+df$QuA1Rc <- as.factor(df$QuA1Rc)
+df$Gender <- droplevels(df$Gender)
+df$QuA1Rc <- droplevels(df$QuA1Rc)
+contingency_table <- table(df$Gender, df$QuA1Rc)
+chisq.test(contingency_table)
+```
+
+
+#T-Tests
+```{r}
+num_vars <- names(cessationR1)[sapply(cessationR1, function(x) is.numeric(x) || is.integer(x))]
+
+t_results <- lapply(num_vars, function(var) {
+  train_vals <- cessationtrain[[var]]
+  test_vals <- cessationtest[[var]]
+  
+  df <- data.frame(
+    value = c(train_vals, test_vals),
+    group = factor(c(rep("train", length(train_vals)), rep("test", length(test_vals))))
+  )
+  df <- df[!is.na(df$value), ]
+  
+  if (length(unique(df$group)) == 2 && all(table(df$group) > 1)) {
+    lev <- leveneTest(value ~ group, data = df)
+    equal_var <- lev$`Pr(>F)`[1] > 0.05
+    
+    ttest <- t.test(value ~ group, data = df, var.equal = equal_var)
+    
+    data.frame(
+      variable = var,
+      train_mean = mean(train_vals, na.rm = TRUE),
+      test_mean = mean(test_vals, na.rm = TRUE),
+      p_value_ttest = ttest$p.value,
+      p_value_levene = lev$`Pr(>F)`[1],
+      equal_variance = equal_var
+    )
+  } else {
+    data.frame(
+      variable = var,
+      train_mean = NA,
+      test_mean = NA,
+      p_value_ttest = NA,
+      p_value_levene = NA,
+      equal_variance = NA
+    )
+  }
+})
+
+t_tests <- do.call(rbind, t_results)
+
+#FDR adjusted p-values with Benjamini-Hochberg
+t_tests$p_value_fdr <- p.adjust(t_tests$p_value_ttest, method = "fdr")
+t_tests <- t_tests[order(t_tests$p_value_fdr), ]
+
+write.csv(t_tests, "~/Desktop/LV/split_t_tests.csv", row.names=FALSE)
+
+rm(t_results, num_vars)
+```
+
+#One-Hot-Encode: Train
+```{r}
+num_cols <- names(cessationtrain)[sapply(cessationtrain, is.numeric)]
+num_cols <- union(c("QuA1Rc", "ID"), num_cols)
+cat_cols <- setdiff(names(cessationtrain), c(num_cols))
+  
+ohe <- dummyVars(~ ., data = cessationtrain[, cat_cols], fullRank = TRUE)
+cessationtrain_ohe <- as.data.frame(predict(ohe, newdata = cessationtrain[, cat_cols]))
+cessationtrain_ohe[] <- lapply(cessationtrain_ohe, function(col) factor(col, levels = c(0, 1)))
+
+cessationtrain_num <- cessationtrain[, num_cols]
+cessationtrain_num_ohe <- cbind(cessationtrain_num, cessationtrain_ohe)
+
+write.csv(cessationtrain_ohe, "/Desktop/LV/cessationtrain_ohe.csv", row.names=FALSE)
+write.csv(cessationtrain_num, "/Desktop/LV/cessationtrain_num.csv", row.names=FALSE)
+write.csv(cessationtrain_num_ohe, "~/Desktop/LV/cessationtrain_num_ohe.csv", row.names=FALSE)
+```
+
+#One-Hot-Encode: Test
+```{r}
+num_cols <- names(cessationtest)[sapply(cessationtest, is.numeric)]
+num_cols <- union(c("QuA1Rc", "ID"), num_cols)
+cat_cols <- setdiff(names(cessationtest), c(num_cols))
+  
+ohe <- dummyVars(~ ., data = cessationtest[, cat_cols], fullRank = TRUE)
+cessationtest_ohe <- as.data.frame(predict(ohe, newdata = cessationtest[, cat_cols]))
+cessationtest_ohe[] <- lapply(cessationtest_ohe, function(col) factor(col, levels = c(0, 1)))
+
+cessationtest_num <- cessationtest[, num_cols]
+cessationtest_num_ohe <- cbind(cessationtest_num, cessationtest_ohe)
+
+write.csv(cessationtest_ohe, "/Desktop/LV/cessationtest_ohe.csv", row.names=FALSE)
+write.csv(cessationtest_num, "/Desktop/LV/cessationtest_num.csv", row.names=FALSE)
+write.csv(cessationtest_num_ohe, "~/Desktop/LV/cessationtest_num_ohe.csv", row.names=FALSE)
+rm(ohe, cat_cols, num_cols)
+```
+
+#Fisher's Tests
+```{r}
+cat_vars_train <- names(cessationtrain_ohe)[sapply(cessationtrain_ohe, function(x) is.factor(x) || is.character(x))]
+cat_vars_test <- names(cessationtest_ohe)[sapply(cessationtest_ohe, function(x) is.factor(x) || is.character(x))]
+if (setequal(cat_vars_train, cat_vars_test)) {
+  cat("The lists are identical.\n")
+} else {
+  cat("The lists are NOT identical.\n")
+}
+  
+fisher_results <- lapply(cat_vars_train, function(var) {
+  train_vals <- cessationtrain_ohe[[var]]
+  test_vals  <- cessationtest_ohe[[var]]
+  
+  df <- data.frame(
+    value = c(as.character(train_vals), as.character(test_vals)),
+    group = factor(c(rep("train", length(train_vals)), rep("test", length(test_vals))))
+  )
+  df <- df[!is.na(df$value), ]
+  
+  if (length(unique(df$group)) == 2 && length(unique(df$value)) > 1) {
+    tbl <- table(df$value, df$group)
+    
+    if (all(dim(tbl) == 2) && all(rowSums(tbl) > 0) && all(colSums(tbl) > 0)) {
+      test <- fisher.test(tbl)
+      p_val <- test$p.value
+    } else {
+      warning(paste("Skipping", var, "- not a valid 2x2 table"))
+      p_val <- NA
+    }
+
+    return(data.frame(
+      variable = var,
+      p_value_fisher = p_val
+    ))
+  } else {
+    return(data.frame(
+      variable = var,
+      p_value_fisher = NA
+    ))
+  }
+})
+
+fisher_tests <- do.call(rbind, fisher_results)
+
+fisher_tests$p_value_fdr <- p.adjust(fisher_tests$p_value_fisher, method = "fdr")
+fisher_tests <- fisher_tests[order(fisher_tests$p_value_fdr), ]
+
+write.csv(fisher_tests, "~/Desktop/LV/split_fisher_tests.csv", row.names=FALSE)
+
+rm(fisher_results, cat_vars_train, cat_vars_test)
+```
+
+#Quit Attempt: Fisher's Test
+```{r}
+var <- "QuA1Rc"
+
+train_vals <- cessationtrain[[var]]
+test_vals <- cessationtest[[var]]
+
+df <- data.frame(
+  value = as.character(c(train_vals, test_vals)),
+  group = factor(c(rep("train", length(train_vals)), rep("test", length(test_vals))))
+)
+
+# Remove NAs
+df <- df[!is.na(df$value), ]
+
+# Create contingency table
+tbl <- table(df$value, df$group)
+
+# Check dimensions and run Fisher's exact test
+if (all(dim(tbl) == 2) && all(rowSums(tbl) > 0) && all(colSums(tbl) > 0)) {
+  test <- fisher.test(tbl)
+  print(test)
+} else {
+  warning("Table is not 2x2 or contains zero counts - Fisher's test not applied")
+}
+```
