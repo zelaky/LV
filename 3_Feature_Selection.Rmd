@@ -1,0 +1,349 @@
+---
+title: "Smoking Cessation: Feature Selection"
+author: "Zoë E. Laky"
+date: "20250603"
+output: html_notebook
+---
+
+## Installing & Loading Packages
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "/Desktop/LV-main")
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LV-main")
+
+required_packages <- c(
+  'tidyverse', 'caret', 'visdat', 'moments', 'arsenal',
+  'sjPlot', 'sjmisc', 'parameters', 'DataExplorer', 'car', 'naniar'
+)
+
+#install new packages
+new_packages <- setdiff(required_packages, rownames(installed.packages()))
+if (length(new_packages)) install.packages(new_packages)
+
+#load packages
+invisible(lapply(required_packages, require, character.only = TRUE))
+
+#citations
+sapply(c("tidyverse", "caret", "sjPlot"), citation)
+
+#working directory
+cat("Working Directory:", getwd(), "\n")
+sessionInfo()
+
+rm(required_packages, new_packages)
+```
+
+## Loading Data
+```{r}
+read_clean <- function(file_path) {
+  df <- read.csv(file_path, header = TRUE, na.strings = c("", "NA"), stringsAsFactors = TRUE)
+  df[df == "NA"] <- NA  
+  return(df)
+}
+
+cessationtrain <- read_clean("cessationtrain.csv")
+cessationtrain_ohe <- read_clean("cessationtrain_ohe.csv")
+cessationtrain_num <- read_clean("cessationtrain_num.csv")
+cessationtrain_num_ohe <- read_clean("cessationtrain_num_ohe.csv")
+
+cessationtest <- read_clean("cessationtest.csv")
+cessationtest_ohe <- read_clean("cessationtest_ohe.csv")
+cessationtest_num <- read_clean("cessationtest_num.csv")
+cessationtest_num_ohe <- read_clean("cessationtest_num_ohe.csv")
+
+list(
+  train = list(
+    dim = dim(cessationtrain),
+    missing = sum(is.na(cessationtrain)),
+    head = head(cessationtrain)
+  ),
+  
+  test = list(
+    dim = dim(cessationtest),
+    missing = sum(is.na(cessationtest)),
+    head = head(cessationtest)
+  )
+)
+```
+
+##Variable Types 
+```{r}
+factor_vars <- c(
+  "QuA1Rc", "MentholBRc", "Gender", "PRBQOEBRc1", "RaceRc", "OtherStudiesRc", 
+  "Eciglifetime", "EcigpastmonthBRc", "EthnicityRc", "FTND2", "FTND3", "FTND5", "FTND6", 
+  "BrandBRc1", "Cig7", "ContemplationStatus", "EducationRc", "FlavorBRc1", "FTND1",  
+  "IncomeRc", "JobRc", "OccupationRc", "SCQOEBRc", "SGOOEBRc", "Smokedmarijuana", 
+  "SoC1BRc", "SoC2BRc", "SoC5BRc", "SSEQ10BRc", "SSEQ12BRc", "SSEQ14BRc", "SSEQ16BRc", 
+  "SSEQ18BRc", "SSEQ20BRc", "SSEQ22BRc", "SSEQ24BRc", "SSEQ26BRc", "SSEQ28BRc", 
+  "SSEQ2BRc", "SSEQ30BRc", "SSEQ32BRc", "SSEQ34BRc", "SSEQ4BRc", "SSEQ6BRc", 
+  "SSEQ8BRc", "SSS10", "SSS11", "SSS12", "SSS13", "SSS14", "SSS15", "SSS16", "SSS17", 
+  "SSS18", "SSS19", "SSS1", "SSS20", "SSS21", "SSS22", "SSS23", "SSS24", "SSS25", 
+  "SSS26", "SSS27", "SSS28", "SSS29", "SSS2", "SSS30", "SSS31", "SSS32", "SSS33", 
+  "SSS34", "SSS35", "SSS36", "SSS37", "SSS38", "SSS39", "SSS3", "SSS40", "SSS4", 
+  "SSS5", "SSS6", "SSS7", "SSS8", "SSS9", "study_condition"
+)
+
+convert_factor <- function(df) {
+  df %>%
+    mutate(across(-ID, as.numeric)) %>%
+    mutate(across(all_of(factor_vars), as.factor))
+}
+
+cessationtrain <- convert_factor(cessationtrain)
+cessationtest <- convert_factor(cessationtest)
+
+cessationtrain_ohe[] <- lapply(cessationtrain_ohe, as.factor)
+cessationtest_ohe[]  <- lapply(cessationtest_ohe, as.factor)
+
+factor_vars <- names(cessationtrain_ohe)[sapply(cessationtrain_ohe, is.factor)]
+numeric_vars <- names(cessationtrain_num)[sapply(cessationtrain_num, is.numeric)]
+
+cessationtrain_num_ohe[factor_vars] <- lapply(cessationtrain_num_ohe[factor_vars], as.factor)
+cessationtrain_num_ohe[numeric_vars] <- lapply(cessationtrain_num_ohe[numeric_vars], as.numeric)
+
+cessationtrain_num_ohe$QuA1Rc <- as.factor(cessationtrain_num_ohe$QuA1Rc)
+cessationtest_num_ohe$QuA1Rc  <- as.factor(cessationtest_num_ohe$QuA1Rc)
+```
+
+##T-Tests
+```{r}
+numeric_vars <- setdiff(numeric_vars, "QuA1Rc")
+
+t_results <- lapply(numeric_vars, function(var) {
+  df <- data.frame(
+    value = cessationtrain_num_ohe[[var]],
+    group = as.factor(cessationtrain_num_ohe$QuA1Rc)
+  )
+  df <- df[!is.na(df$value) & !is.na(df$group), ]
+  
+  if (length(unique(df$group)) == 2 && all(table(df$group) > 1)) {
+    lev <- leveneTest(value ~ group, data = df)
+    equal_var <- lev$`Pr(>F)`[1] > 0.05
+    
+    ttest <- t.test(value ~ group, data = df, var.equal = equal_var)
+    
+    data.frame(
+      variable = var,
+      quit_mean = mean(df$value[df$group == levels(df$group)[1]], na.rm = TRUE),
+      no_quit_mean = mean(df$value[df$group == levels(df$group)[2]], na.rm = TRUE),
+      p_value_ttest = ttest$p.value,
+      p_value_levene = lev$`Pr(>F)`[1],
+      equal_variance = equal_var
+    )
+  } else {
+    data.frame(
+      variable = var,
+      quit_mean = NA,
+      no_quit_mean = NA,
+      p_value_ttest = NA,
+      p_value_levene = NA,
+      equal_variance = NA
+    )
+  }
+})
+
+t_tests <- do.call(rbind, t_results)
+t_tests$p_value_fdr <- p.adjust(t_tests$p_value_ttest, method = "fdr")
+t_tests <- t_tests[order(t_tests$p_value_fdr), ]
+write.csv(t_tests, "~/Desktop/LV-main/quit_t_tests.csv", row.names = FALSE)
+
+t_tests_p1 <- t_tests[t_tests$p_value_ttest < 0.1, ]
+t_tests_p05 <- t_tests[t_tests$p_value_ttest < 0.05, ]
+
+rm(t_results, numeric_vars)
+```
+
+##Fisher's Tests
+```{r}
+fisher_results <- lapply(factor_vars, function(var) {
+  df <- data.frame(
+    var_value = cessationtrain_num_ohe[[var]],
+    group = cessationtrain_num_ohe$QuA1Rc
+  ) %>% filter(!is.na(var_value) & !is.na(group))
+  
+  tbl <- table(df$var_value, df$group)
+  
+  if (nrow(tbl) > 1 && ncol(tbl) > 1) {
+    test <- fisher.test(tbl)
+    
+    data.frame(
+      variable = var,
+      p_value_fisher = test$p.value,
+      stringsAsFactors = FALSE
+    )
+  } else {
+    data.frame(
+      variable = var,
+      p_value_fisher = NA_real_
+    )
+  }
+})
+
+fisher_tests <- do.call(rbind, fisher_results)
+fisher_tests$p_value_fdr <- p.adjust(fisher_tests$p_value_fisher, method = "fdr")
+fisher_tests <- fisher_tests %>% arrange(p_value_fdr)
+write.csv(fisher_tests, "~/Desktop/LV-main/quit_fisher_tests.csv", row.names = FALSE)
+
+fisher_tests_p1 <- fisher_tests[fisher_tests$p_value_fisher < 0.1, ]
+fisher_tests_p05 <- fisher_tests[fisher_tests$p_value_fisher < 0.05, ]
+
+rm(fisher_results, factor_vars)
+```
+
+## Logistic Regression
+```{r}
+quit <- "QuA1Rc"
+cessationtrain_num_ohe[[quit]] <- factor(cessationtrain_num_ohe[[quit]], levels = c(2, 1), labels = c(0, 1))
+predictors <- setdiff(names(cessationtrain_num_ohe), c("ID", quit))
+
+log_results <- vector("list", length(predictors))
+
+for (i in seq_along(predictors)) {
+  var <- predictors[i]
+  
+  formula <- as.formula(paste(quit, "~", var))
+  
+  fit <- tryCatch(glm(formula, data = cessationtrain_num_ohe, family = binomial),
+                  error = function(e) NULL)
+  
+  if (is.null(fit)) {
+    log_results[[i]] <- data.frame(
+      variable = var,
+      p_value = NA_real_,
+      odds_ratio = NA_real_,
+      ci_low = NA_real_,
+      ci_high = NA_real_
+    )
+    next
+  }
+  coef_summary <- summary(fit)$coefficients
+  
+  if (nrow(coef_summary) < 2) {
+    log_results[[i]] <- data.frame(
+      variable = var,
+      p_value = NA_real_,
+      odds_ratio = NA_real_,
+      ci_low = NA_real_,
+      ci_high = NA_real_
+    )
+    next
+  }
+  
+  p_val <- coef_summary[2, "Pr(>|z|)"]
+  est <- coef(fit)[2]
+  se <- coef_summary[2, "Std. Error"]
+  
+  odds <- exp(est)
+  ci95_low <- exp(est - 1.96 * se)
+  ci95_high <- exp(est + 1.96 * se)
+  
+  log_results[[i]] <- data.frame(
+    variable = var,
+    p_value = p_val,
+    odds_ratio = odds,
+    ci_low = ci95_low,
+    ci_high = ci95_high
+  )
+}
+
+logreg_tests <- do.call(rbind, log_results)
+logreg_tests <- logreg_tests[order(logreg_tests$p_value), ]
+write.csv(logreg_tests, "~/Desktop/LV-main/quit_logreg_tests.csv", row.names = FALSE)
+
+logreg_tests_p1 <- subset(logreg_tests, p_value < 0.1)
+logreg_tests_p05 <- subset(logreg_tests, p_value < 0.05)
+
+rm(log_results)
+```
+
+#Variable Lists
+```{r}
+#p < 0.1 Threshold
+ttest_vars_p1 <- t_tests_p1$variable
+fisher_vars_p1 <- fisher_tests_p1$variable
+t_fisher_vars_p1 <- union(ttest_vars_p1, fisher_vars_p1)
+logreg_vars_p1 <- logreg_tests_p1$variable
+
+t_fisher_unique_p1 <- setdiff(t_fisher_vars_p1, logreg_vars_p1)
+logreg_unique_p1 <- setdiff(logreg_vars_p1, t_fisher_vars_p1)
+sig_vars_p1 <- intersect(t_fisher_vars_p1, logreg_vars_p1)
+
+print(t_fisher_unique_p1)
+print(logreg_unique_p1)
+print(sig_vars_p1)
+
+keep_vars_p1 <- unique(sub("\\..*", "", sig_vars_p1))
+
+print(keep_vars_p1)
+
+full_vars_p1 <- unique(unlist(lapply(keep_vars_p1, function(root) {
+  grep(paste0("^", root, "(\\.|$)"), names(cessationtrain_num_ohe), value = TRUE)
+})))
+
+print(full_vars_p1)
+
+#p < 0.05 Threshold
+ttest_vars_p05 <- t_tests_p05$variable
+fisher_vars_p05 <- fisher_tests_p05$variable
+t_fisher_vars_p05 <- union(ttest_vars_p05, fisher_vars_p05)
+logreg_vars_p05 <- logreg_tests_p05$variable
+
+t_fisher_unique_p05 <- setdiff(t_fisher_vars_p05, logreg_vars_p05)
+logreg_unique_p05 <- setdiff(logreg_vars_p05, t_fisher_vars_p05)
+sig_vars_p05 <- intersect(t_fisher_vars_p05, logreg_vars_p05)
+
+print(t_fisher_unique_p05)
+print(logreg_unique_p05)
+print(sig_vars_p05)
+
+keep_vars_p05 <- unique(sub("\\..*", "", sig_vars_p05))
+
+print(keep_vars_p05)
+
+full_vars_p05 <- unique(unlist(lapply(keep_vars_p05, function(root) {
+  grep(paste0("^", root, "(\\.|$)"), names(cessationtrain_num_ohe), value = TRUE)
+})))
+
+print(full_vars_p05)
+```
+
+#Check Variable Variance
+```{r}
+train_nzv_p1 <- nearZeroVar(cessationtrain_num_ohe_p1_final %>% select(-ID, -QuA1Rc), saveMetrics=TRUE) #SGOOEBRc level 5
+test_nzv_p1 <- nearZeroVar(cessationtest_num_ohe_p1_final %>% select(-ID, -QuA1Rc), saveMetrics=TRUE) #SGOOEBRc level 5 and EducationRc level 4 
+train_nzv_p05 <- nearZeroVar(cessationtrain_num_ohe_p05_final %>% select(-ID, -QuA1Rc), saveMetrics=TRUE) #none
+test_nzv_p05 <- nearZeroVar(cessationtest_num_ohe_p05_final %>% select(-ID, -QuA1Rc), saveMetrics=TRUE) #EducationRc level 4
+
+table(cessationtrain_num_ohe_p1_final$SGOOEBRc.5, useNA = 'ifany') #5 = "Other/Don't Know"
+for (df in ls(pattern = "_final$")) {
+  final_df <- get(df)
+  
+  if ("SGOOEBRc" %in% names(final_df)) {
+    final_df$SGOOEBRc[final_df$SGOOEBRc == 5] <- NA
+  }
+  
+  if ("SGOOEBRc.5" %in% names(final_df)) {
+    final_df <- final_df[, !(names(final_df) == "SGOOEBRc.5")]
+  }
+  assign(df, final_df)
+}
+
+table(cessationtrain_num_ohe_p1_final$SGOOEBRc.5, useNA = 'ifany')
+```
+
+##Save Dataframes
+```{r}
+save_dir <- "~/Desktop/LV-main/Final_Data"
+dir.create(save_dir, showWarnings = FALSE)
+
+final_df <- ls(pattern = "_final$")
+for (df in final_df) {
+  obj <- get(df)
+  if (is.data.frame(obj)) {
+    write.csv(obj, file = file.path(save_dir, paste0(df, ".csv")), row.names = FALSE)
+  }
+}
+```
+

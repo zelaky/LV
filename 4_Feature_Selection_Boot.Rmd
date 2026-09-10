@@ -1,0 +1,225 @@
+---
+title: "Smoking Cessation: Bootstrap Stability of Feature Selection"
+author: "Zoë E. Laky"
+date: "20250603"
+output: html_notebook
+---
+
+## Installing & Loading Packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LV-main")
+
+required_packages <- c(
+  'tidyverse', 'caret', 'visdat', 'moments', 'arsenal',
+  'sjPlot', 'sjmisc', 'parameters', 'DataExplorer', 'car', 'naniar'
+)
+
+new_packages <- setdiff(required_packages, rownames(installed.packages()))
+if (length(new_packages)) install.packages(new_packages)
+invisible(lapply(required_packages, require, character.only = TRUE))
+
+rm(required_packages, new_packages)
+```
+
+## Loading Data
+```{r}
+read_clean <- function(file_path) {
+  df <- read.csv(file_path, header = TRUE, na.strings = c("", "NA"), stringsAsFactors = TRUE)
+  df[df == "NA"] <- NA
+  return(df)
+}
+
+cessationtrain_num_ohe <- read_clean("cessationtrain_num_ohe.csv")
+```
+
+## Variable Types
+```{r}
+# NOTE: factor_vars_master (the ROOT categorical variable names, e.g.
+# "EducationRc") is only needed when typing cessationtrain/cessationtest
+# (non-OHE). This script only loads cessationtrain_num_ohe, so it's omitted.
+#
+# In cessationtrain_num_ohe / cessationtest_num_ohe, a column is a one-hot
+# dummy (factor) if and only if "." appears in its column name
+# (e.g. "EducationRc.2"); everything else is numeric.
+
+factor_vars_ohe  <- grep("\\.", names(cessationtrain_num_ohe), value = TRUE)
+numeric_vars_all <- setdiff(names(cessationtrain_num_ohe), c("ID", "QuA1Rc", factor_vars_ohe))
+
+cessationtrain_num_ohe[factor_vars_ohe] <- lapply(cessationtrain_num_ohe[factor_vars_ohe], as.factor)
+cessationtrain_num_ohe[numeric_vars_all] <- lapply(cessationtrain_num_ohe[numeric_vars_all], as.numeric)
+
+cessationtrain_num_ohe$QuA1Rc <- as.factor(cessationtrain_num_ohe$QuA1Rc)
+
+cat("Identified", length(factor_vars_ohe), "one-hot factor dummy columns and",
+    length(numeric_vars_all), "numeric columns.\n")
+```
+
+## Selection Function: T-test + Fisher's + Logistic Regression, Intersected
+```{r}
+# Mirrors original pipeline exactly: t-test (numeric) + Fisher's exact
+# (one-hot factor dummies) intersected with univariate logistic
+# regression on ALL predictors. Final "sig_vars" set, then expanded back
+# to include every dummy level of any root variable that was significant.
+
+run_selection <- function(data, factor_vars, numeric_vars, alpha = 0.05) {
+
+  #T-tests (numeric variables)
+  t_results <- lapply(numeric_vars, function(var) {
+    df <- data.frame(value = data[[var]], group = as.factor(data$QuA1Rc))
+    df <- df[!is.na(df$value) & !is.na(df$group), ]
+
+    if (length(unique(df$group)) == 2 && all(table(df$group) > 1)) {
+      lev <- tryCatch(leveneTest(value ~ group, data = df), error = function(e) NULL)
+      if (is.null(lev)) return(data.frame(variable = var, p_value_ttest = NA_real_))
+      equal_var <- lev$`Pr(>F)`[1] > 0.05
+
+      ttest <- tryCatch(t.test(value ~ group, data = df, var.equal = equal_var),
+                         error = function(e) NULL)
+      if (is.null(ttest)) return(data.frame(variable = var, p_value_ttest = NA_real_))
+
+      data.frame(variable = var, p_value_ttest = ttest$p.value)
+    } else {
+      data.frame(variable = var, p_value_ttest = NA_real_)
+    }
+  })
+  t_tests <- do.call(rbind, t_results)
+  ttest_vars <- t_tests$variable[!is.na(t_tests$p_value_ttest) & t_tests$p_value_ttest < alpha]
+
+  #Fisher's exact tests (one-hot factor dummies)
+  fisher_results <- lapply(factor_vars, function(var) {
+    df <- data.frame(var_value = data[[var]], group = data$QuA1Rc) %>%
+      filter(!is.na(var_value) & !is.na(group))
+
+    tbl <- table(df$var_value, df$group)
+
+    if (nrow(tbl) > 1 && ncol(tbl) > 1) {
+      test <- tryCatch(fisher.test(tbl), error = function(e) NULL)
+      if (is.null(test)) return(data.frame(variable = var, p_value_fisher = NA_real_))
+      data.frame(variable = var, p_value_fisher = test$p.value)
+    } else {
+      data.frame(variable = var, p_value_fisher = NA_real_)
+    }
+  })
+  fisher_tests <- do.call(rbind, fisher_results)
+  fisher_vars <- fisher_tests$variable[!is.na(fisher_tests$p_value_fisher) & fisher_tests$p_value_fisher < alpha]
+
+  t_fisher_vars <- union(ttest_vars, fisher_vars)
+
+  #Univariate logistic regression (all predictors)
+  quit <- "QuA1Rc"
+  data[[quit]] <- factor(data[[quit]], levels = c(2, 1), labels = c(0, 1))
+  predictors <- setdiff(names(data), c("ID", quit))
+
+  log_results <- vector("list", length(predictors))
+  for (i in seq_along(predictors)) {
+    var <- predictors[i]
+    formula <- as.formula(paste(quit, "~", var))
+    fit <- tryCatch(glm(formula, data = data, family = binomial), error = function(e) NULL)
+
+    if (is.null(fit)) {
+      log_results[[i]] <- data.frame(variable = var, p_value = NA_real_)
+      next
+    }
+    coef_summary <- summary(fit)$coefficients
+    if (nrow(coef_summary) < 2) {
+      log_results[[i]] <- data.frame(variable = var, p_value = NA_real_)
+      next
+    }
+    log_results[[i]] <- data.frame(variable = var, p_value = coef_summary[2, "Pr(>|z|)"])
+  }
+  logreg_tests <- do.call(rbind, log_results)
+  logreg_vars <- logreg_tests$variable[!is.na(logreg_tests$p_value) & logreg_tests$p_value < alpha]
+
+  #Intersection: must be significant in (t-test OR Fisher's) AND logistic
+  sig_vars <- intersect(t_fisher_vars, logreg_vars)
+
+  #Collapse to root variable names, then re-expand to all dummy levels
+  keep_vars <- unique(sub("\\..*", "", sig_vars))
+  full_vars <- unique(unlist(lapply(keep_vars, function(root) {
+    grep(paste0("^", root, "(\\.|$)"), names(data), value = TRUE)
+  })))
+
+  full_vars
+}
+```
+
+## Stratified Bootstrap
+```{r}
+n_boot <- 1000
+seed <- 842
+alpha_threshold <- 0.05
+
+idx_by_class <- split(seq_len(nrow(cessationtrain_num_ohe)), cessationtrain_num_ohe$QuA1Rc)
+
+set.seed(seed)
+boot_selected <- vector("list", n_boot)
+
+for (b in seq_len(n_boot)) {
+  #stratified resample WITH replacement, within each class, at original class size
+  #preserves the exact class imbalance ratio in every bootstrap draw
+  boot_idx <- unlist(lapply(idx_by_class, function(idx) sample(idx, length(idx), replace = TRUE)))
+  boot_sample <- cessationtrain_num_ohe[boot_idx, ]
+
+  boot_selected[[b]] <- tryCatch(
+    run_selection(
+      data = boot_sample,
+      factor_vars = factor_vars_ohe,
+      numeric_vars = numeric_vars_all,
+      alpha = alpha_threshold
+    ),
+    error = function(e) character(0)  # if a resample fails (e.g. degenerate table), record no selections
+  )
+
+  if (b %% 50 == 0) cat("Completed bootstrap", b, "of", n_boot, "\n")
+}
+```
+
+## Tabulate Selection Frequency
+```{r}
+all_vars_selected <- unlist(boot_selected)
+
+stability_table <- as.data.frame(table(all_vars_selected)) %>%
+  rename(variable = all_vars_selected, times_selected = Freq) %>%
+  mutate(pct_bootstraps = times_selected / n_boot) %>%
+  arrange(desc(pct_bootstraps))
+
+# add back variables that were NEVER selected in any bootstrap, at 0%
+all_candidate_vars <- names(cessationtrain_num_ohe) %>% setdiff(c("ID", "QuA1Rc"))
+never_selected <- setdiff(all_candidate_vars, stability_table$variable)
+if (length(never_selected) > 0) {
+  stability_table <- bind_rows(
+    stability_table,
+    data.frame(variable = never_selected, times_selected = 0, pct_bootstraps = 0)
+  )
+}
+
+print(stability_table)
+write.csv(stability_table, "~/Desktop/LV-main/bootstrap_feature_stability.csv", row.names = FALSE)
+```
+
+## Compare Against Original Single-Split Selection
+```{r}
+#ran the same selection once on the full (non-bootstrapped) training set, to see how the original paper's feature set lines up with bootstrap stability
+original_selected <- run_selection(
+  data = cessationtrain_num_ohe,
+  factor_vars = factor_vars_ohe,
+  numeric_vars = numeric_vars_all,
+  alpha = alpha_threshold
+)
+
+cat("\nOriginal single-split selected", length(original_selected), "variables (dummy-level count).\n")
+
+comparison_table <- stability_table %>%
+  mutate(in_original_selection = variable %in% original_selected) %>%
+  arrange(desc(pct_bootstraps))
+
+print(comparison_table)
+write.csv(comparison_table, "~/Desktop/LV-main/bootstrap_vs_original_selection.csv", row.names = FALSE)
+
+cat("\nOriginally-selected variables also selected in >=80% of bootstraps (stable):\n")
+print(comparison_table$variable[comparison_table$in_original_selection & comparison_table$pct_bootstraps >= 0.8])
+
+cat("\nOriginally-selected variables selected in <50% of bootstraps (fragile):\n")
+print(comparison_table$variable[comparison_table$in_original_selection & comparison_table$pct_bootstraps < 0.5])
+```

@@ -1,0 +1,735 @@
+---
+title: 'Smoking Cessation: Random Forests'
+author: "Zoë E. Laky"
+date: '20250603'
+output: html_notebook
+---
+
+## Installing & Loading Packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  cache = TRUE)
+knitr::opts_knit$set(root.dir = "~/Desktop/LV-main/Final_Data")
+
+required_packages <- c(
+  'tidyverse', 'caret', 'visdat', 'moments', 'arsenal', 'ranger',
+  'sjPlot', 'sjmisc', 'parameters', 'DataExplorer', 'car', 'naniar', 'recipes', 'kernlab', 'PRROC', 'ggplot2',
+  'dplyr', 'tidyr' 
+)
+
+#install new packages
+new_packages <- setdiff(required_packages, rownames(installed.packages()))
+if (length(new_packages)) install.packages(new_packages)
+
+#load packages
+invisible(lapply(required_packages, require, character.only = TRUE))
+
+#citations
+sapply(c("tidyverse", "caret", "sjPlot"), citation)
+
+#working directory
+cat("Working Directory:", getwd(), "\n")
+sessionInfo()
+
+rm(required_packages, new_packages)
+```
+
+## Seed
+```{r}
+#testing seed 
+seed <- 842
+set.seed(seed)
+rnorm(1) #1.377664
+exists(".Random.seed")
+.Random.seed
+set.seed(NULL)
+```
+
+## Loading Data
+```{r}
+read_clean <- function(file_path) {
+  df <- read.csv(file_path, header = TRUE, na.strings = c("", "NA"), stringsAsFactors = TRUE)
+  df[df == "NA"] <- NA  
+  return(df)
+}
+
+cessationtrain_p05_final <- read_clean("cessationtrain_p05_final.csv")
+cessationtest_p05_final <- read_clean("cessationtest_p05_final.csv")
+
+df_list <- list(
+  p05_train  = cessationtrain_p05_final, 
+  p05_test   = cessationtest_p05_final
+)
+
+df_list <- lapply(df_list, function(df) {
+  df %>%
+    arrange(ID) %>%
+    mutate(row_id = row_number())
+})
+
+cessationtrain_p05_final <- df_list$p05_train
+cessationtest_p05_final <- df_list$p05_test
+
+rm(df_list)
+```
+
+## Variable Types
+```{r}
+factor_vars_p05 <- c("QuA1Rc", "Cig7", "ContemplationStatus", "EducationRc", 
+                     "SoC2BRc", "SoC5BRc", "SSEQ6BRc", "SSEQ8BRc", "SSS17")
+
+convert_vars <- function(df, factor_vars) {
+  df %>%
+    mutate(across(-ID, as.numeric)) %>%
+    mutate(across(all_of(factor_vars), as.factor))}
+
+cessationtrain_p05_final <- convert_vars(cessationtrain_p05_final, factor_vars_p05)
+cessationtest_p05_final  <- convert_vars(cessationtest_p05_final,  factor_vars_p05)
+
+dfs <- c(
+  "cessationtrain_p05_final",
+  "cessationtest_p05_final")
+
+for (df in dfs) {
+  QuA1Rc_df <- get(df)
+  if ("QuA1Rc" %in% colnames(QuA1Rc_df)) {
+    QuA1Rc_df$QuA1Rc <- factor(QuA1Rc_df$QuA1Rc, levels = c("1", "2"), labels = c("X1", "X2"))}
+  assign(df, QuA1Rc_df)}
+```
+
+#Manual Folds for Repeated 5-fold Cross-Validation
+```{r}
+identical(cessationtrain_p05_final$ID, cessationtrain_p05_final$ID) #TRUE
+
+y_p05 <- factor(cessationtrain_p05_final$QuA1Rc)
+
+set.seed(843)
+manual_folds_p05 <- createMultiFolds(y = y_p05, k = 5, times = 5)
+names(manual_folds_p05)
+str(manual_folds_p05[[1]]) 
+```
+
+## Importance Function 
+```{r}
+auprc_feature_importance_repeated <- function(model, data, target_col,
+                                               positive_class = "yes",
+                                               n_repeats = 50,
+                                               seed = 842) {
+
+  y_true <- as.character(data[[target_col]])
+  predictors <- data %>% select(-all_of(target_col))
+
+  # baseline AUPRC (computed once; unaffected by permutation seed)
+  probs <- predict(model, newdata = predictors, type = "prob")[, positive_class]
+  fg <- probs[y_true == positive_class]
+  bg <- probs[y_true != positive_class]
+  baseline_auprc <- pr.curve(scores.class0 = fg, scores.class1 = bg)$auc.integral
+
+  feature_names <- names(predictors)
+
+  set.seed(seed)
+  # matrix: rows = repeats, columns = features
+  drop_matrix <- matrix(NA_real_, nrow = n_repeats, ncol = length(feature_names),
+                         dimnames = list(NULL, feature_names))
+
+  for (var in feature_names) {
+    for (r in seq_len(n_repeats)) {
+      data_permuted <- predictors
+      data_permuted[[var]] <- sample(data_permuted[[var]])  # permute the variable
+
+      if (is.factor(data[[var]])) {  # preserve factor structure/levels
+        data_permuted[[var]] <- factor(data_permuted[[var]], levels = levels(data[[var]]))
+      }
+
+      perm_probs <- predict(model, newdata = data_permuted, type = "prob")[, positive_class]
+      fg_perm <- perm_probs[y_true == positive_class]
+      bg_perm <- perm_probs[y_true != positive_class]
+      perm_auprc <- pr.curve(scores.class0 = fg_perm, scores.class1 = bg_perm)$auc.integral
+
+      drop_matrix[r, var] <- baseline_auprc - perm_auprc  # drop in AUPRC = importance
+    }
+  }
+
+  # summarize across repeats: mean importance + variability
+  importance_summary <- tibble(
+    feature      = feature_names,
+    auprc_drop_mean = colMeans(drop_matrix, na.rm = TRUE),
+    auprc_drop_sd   = apply(drop_matrix, 2, sd, na.rm = TRUE),
+    auprc_drop_se   = auprc_drop_sd / sqrt(n_repeats)
+  ) %>%
+    arrange(desc(auprc_drop_mean))
+
+  list(
+    summary = importance_summary,   # one row per feature: mean/SD/SE of AUPRC drop
+    raw     = drop_matrix,          # full n_repeats x n_features matrix, if needed
+    baseline_auprc = baseline_auprc
+  )}
+```
+
+## Random Forest: Custom Model (dependent variable = factor)
+```{r}
+#mtry and ntree
+random_forest_custom <- list(
+  type = "Classification",
+  library = "randomForest",
+  loop = NULL)
+random_forest_custom$parameters <- data.frame(
+  parameter = c("mtry", "ntree"),
+  class = rep("numeric", 2),
+  label = c("mtry", "ntree"))
+random_forest_custom$grid <- function(x, y, len = NULL, search = "grid") {
+  expand.grid(mtry = floor(sqrt(ncol(x))), ntree = 500)}
+random_forest_custom$fit <- function(x, y, wts, param, lev, last, classProbs, ...) {
+  rf_args <- list(...)
+  #cat("Class weights used:\n")
+  #print(rf_args$classwt)
+  mod <- randomForest(
+    x = x,
+    y = y,
+    mtry = param$mtry,
+    ntree = param$ntree,
+    classwt = rf_args$classwt)
+  mod$classes <- levels(y)
+  mod}
+random_forest_custom$predict <- function(modelFit, newdata, preProc = NULL, submodels = NULL) {
+  predict(modelFit, newdata)}
+random_forest_custom$prob <- function(modelFit, newdata, preProc = NULL, submodels = NULL) {
+  predict(modelFit, newdata, type = "prob")}
+random_forest_custom$sort <- function(x) x[order(x[, 1]), ]
+random_forest_custom$levels <- function(x) x$classes
+```
+
+#RF Recipes
+```{r}
+rf_recipe_p05 <- recipe(QuA1Rc ~ ., data = cessationtrain_p05_final) %>%
+  update_role(ID, new_role = "ID") %>% 
+  update_role(row_id, new_role = "ID") %>% 
+  step_impute_mode(all_nominal_predictors()) %>%  
+  step_impute_median(all_numeric_predictors()) 
+```
+
+#RF Custom (p < 0.05)
+*Tuning*
+```{r}
+mtry_p05 <- floor(sqrt(32)) #5
+
+n_fold <- 5
+n_repeat <- 5
+n_tune <- 64
+n_resample <- n_fold * n_repeat
+
+set.seed(seed)
+seeds <- vector("list", length = n_resample + 1)
+for (i in seq_len(n_resample)) {
+  seeds[[i]] <- sample.int(1e6, n_tune)}
+seeds[[n_resample + 1]] <- sample.int(1e6, 1)
+
+train_ctrl <- trainControl(
+  method = "repeatedcv",       
+  index = manual_folds_p05,           
+  seeds = seeds,               
+  classProbs = TRUE,
+  summaryFunction = prSummary,
+  savePredictions = "all")
+
+set.seed(seed)
+rf_custom_p05 <- train(
+  rf_recipe_p05,
+  data = cessationtrain_p05_final,
+  method = random_forest_custom,
+  metric = "F",
+  tuneGrid = expand.grid(mtry = c(2, 3, 4, 5, 6, 7, 8, 9, 10), ntree = c(100, 300, 500, 700, 900, 1100, 1300)),
+  trControl = train_ctrl)
+
+print(rf_custom_p05$bestTune) #mtry = 10, ntree = 700
+rf_custom_p05_best_predict <- subset(rf_custom_p05$pred, mtry == rf_custom_p05$bestTune$mtry & ntree == rf_custom_p05$bestTune$ntree)
+rf_custom_p05_predict <- subset(rf_custom_p05$pred)
+rf_custom_p05_resample <- rf_custom_p05$resample
+confusionMatrix(rf_custom_p05_best_predict$pred, rf_custom_p05_best_predict$obs)
+rf_custom_p05_final_model <- rf_custom_p05$finalModel
+print(rf_custom_p05_final_model)
+rf_custom_p05_result <- rf_custom_p05$results
+```
+
+*Fitting*
+```{r}
+train_ctrl <- trainControl(
+  method = 'none',
+  classProbs = TRUE,
+  summaryFunction = prSummary,
+  savePredictions = "all"
+)
+
+set.seed(seed)
+rf_custom_final_p05 <- train(
+  rf_recipe_p05,
+  data = cessationtrain_p05_final, 
+  method=random_forest_custom, 
+  metric="F", 
+  tuneGrid=expand.grid(mtry=10, ntree=700), 
+  trControl=train_ctrl
+)
+
+rf_custom_final_p05_final_model <- rf_custom_final_p05$finalModel
+print(rf_custom_final_p05_final_model)
+```
+
+*Testing*
+```{r}
+rf_custom_p05_train_predict <- predict(rf_custom_final_p05, newdata = cessationtrain_p05_final)
+rf_custom_p05_test_predict <- predict(rf_custom_final_p05, newdata = cessationtest_p05_final)
+
+confusionMatrix(rf_custom_p05_train_predict, cessationtrain_p05_final$QuA1Rc)
+confusionMatrix(rf_custom_p05_test_predict, cessationtest_p05_final$QuA1Rc)
+```
+
+*AUPRC: Train and Test Point Estimates*
+```{r}
+train_probs <- predict(rf_custom_final_p05, newdata = cessationtrain_p05_final, type = "prob")[, "X1"]
+test_probs <- predict(rf_custom_final_p05, newdata = cessationtest_p05_final, type = "prob")[, "X1"]
+
+train_obs <- factor(cessationtrain_p05_final$QuA1Rc, levels = c("X2", "X1"), labels = c("no", "yes"))
+test_obs <- factor(cessationtest_p05_final$QuA1Rc, levels = c("X2", "X1"), labels = c("no", "yes"))
+
+#calculate PR curves
+pr_train <- pr.curve(scores.class0 = train_probs[train_obs == "yes"],
+                     scores.class1 = train_probs[train_obs == "no"],
+                     curve = TRUE)
+
+pr_test <- pr.curve(scores.class0 = test_probs[test_obs == "yes"],
+                    scores.class1 = test_probs[test_obs == "no"],
+                    curve = TRUE)
+
+#graph training and testing PRCs
+pr_train_df <- as.data.frame(pr_train$curve)
+colnames(pr_train_df) <- c("Recall", "Precision", "Threshold")
+pr_train_df$Set <- "Train"
+pr_test_df <- as.data.frame(pr_test$curve)
+colnames(pr_test_df) <- c("Recall", "Precision", "Threshold")
+pr_test_df$Set <- "Test"
+pr_df <- bind_rows(pr_train_df, pr_test_df)
+baseline_train <- mean(pr_train_df$Precision)
+baseline_test <- mean(pr_test_df$Precision)
+auprc_values <- data.frame(
+  Set = c("Train", "Test"),
+  AUPRC = c(pr_train$auc.integral, pr_test$auc.integral))
+
+ggplot(pr_df, aes(x = Recall, y = Precision, color = Set)) +
+  geom_line(size = 1.2) +
+  geom_hline(yintercept = baseline_train, linetype = "dashed", color = "blue") +
+  geom_hline(yintercept = baseline_test, linetype = "dashed", color = "red") +
+  annotate("text", x = 0.01, y = baseline_train + 0.02, label = "Train Baseline", 
+           hjust = 0, color = "blue", size = 4) +
+  annotate("text", x = 0.01, y = baseline_test + 0.02, label = "Test Baseline", 
+           hjust = 0, color = "red", size = 4) +
+  scale_color_manual(values = c("Train" = "blue", "Test" = "red")) +
+  labs(
+    title = "RF Custom Precision-Recall Curves: Train vs. Test",
+    subtitle = paste0("Train AUPRC = ", round(pr_train$auc.integral, 2),
+                      ", Test AUPRC = ", round(pr_test$auc.integral, 2)),
+    y = "Precision",
+    x = "Recall",
+    color = "Data Split") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"))
+
+#table of AUCs by resampling
+rf_custom_p05_auprc <- rf_custom_p05_best_predict %>%
+  mutate(rep = sub(".*\\.(Rep\\d+)", "\\1", Resample))
+
+rf_custom_p05_repeat_auprc <- rf_custom_p05_auprc %>%
+  group_by(rep) %>%
+  summarise(auprc = pr.curve(
+      scores.class0 = X1[obs == "X1"],
+      scores.class1 = X1[obs == "X2"],
+      curve = FALSE)$auc.integral)
+```
+
+*Bootstrap: Testing AUPRC and Brier*
+```{r}
+#bootstrap
+test_labels <- data.frame(
+  obs = test_obs, # factor: "no"/"yes"
+  prob_yes = test_probs, # numeric: P("yes")
+  outcome = as.numeric(test_obs == "yes")) # 1 = yes, 0 = no
+strata <- as.numeric(test_labels$obs) # 1 = yes, 0 = no
+
+pos_class <- "yes"
+neg_class <- "no"
+
+#AUPRC
+auprc_stat <- function(data, indices) {
+  d <- data[indices, ]
+  pr <- pr.curve(
+    scores.class0 = d$prob_yes[d$obs == pos_class],
+    scores.class1 = d$prob_yes[d$obs == neg_class],
+    curve = FALSE
+  )
+  pr$auc.integral
+} 
+
+set.seed(843)
+boot_out <- boot(data = test_labels, statistic = auprc_stat, R = 2000, strata = strata)
+boot_out$t0 #0.4765577                
+boot.ci(boot_out, type = c("perc", "bca")) #CI95%   ( 0.2085,  0.7493 )
+
+#Brier
+brier_stat <- function(data, indices) {
+  d <- data[indices, ]
+  mean((d$prob_yes - d$outcome)^2)}
+
+set.seed(843)
+boot_brier <- boot(data = test_labels, statistic = brier_stat, R = 2000, strata = strata)
+boot_brier$t0 #0.1384655                          
+boot.ci(boot_brier, type = c("perc", "bca")) #CI95%   ( 0.0983,  0.1809 )
+```
+
+*Calibration Curve*
+```{r}
+n_bins <- 10  
+bin_breaks <- seq(0, 1, length.out = n_bins + 1)
+
+test_labels <- test_labels %>%
+  mutate(bin = cut(prob_yes, breaks = bin_breaks, include.lowest = TRUE))
+
+calib_df <- test_labels %>%
+  group_by(bin, .drop = FALSE) %>%  # keep empty bins so bootstrap columns align
+  summarise(
+    mean_pred = mean(prob_yes),
+    mean_obs = mean(outcome),
+    nb = n(),
+    .groups = "drop")
+
+print(calib_df)
+
+calib_stat <- function(data, indices) {
+  d <- data[indices, ]
+  d$bin <- cut(d$prob_yes, breaks = bin_breaks, include.lowest = TRUE)
+  sapply(levels(d$bin), function(b) {
+    obs_in_bin <- d$outcome[d$bin == b]
+    if (length(obs_in_bin) == 0) return(NA_real_)
+    mean(obs_in_bin)})}
+
+set.seed(843)
+boot_calib <- boot(data = test_labels, statistic = calib_stat, R = 2000, strata = strata)
+
+calib_ci <- data.frame(
+  bin   = levels(test_labels$bin),
+  lower = apply(boot_calib$t, 2, quantile, probs = 0.025, na.rm = TRUE),
+  upper = apply(boot_calib$t, 2, quantile, probs = 0.975, na.rm = TRUE))
+
+calib_df <- calib_df %>%
+  mutate(bin = as.character(bin)) %>%
+  left_join(calib_ci, by = "bin")
+
+# sanity check: how many bootstrap resamples had a missing/empty bin?
+colSums(is.na(boot_calib$t))
+
+# calibration curve with 95% bootstrap CI band
+ggplot(calib_df, aes(x = mean_pred, y = mean_obs)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), fill = "steelblue", alpha = 0.2) +
+  geom_point(aes(size = nb), color = "steelblue") +
+  geom_line(color = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray40") +
+  labs(x = "Mean Predicted Probability", y = "Observed Proportion",
+       title = "Calibration Curve with 95% Bootstrap CI",
+       size = "Bin N") +
+  theme_minimal(base_size = 14)
+
+range(calib_df$mean_pred, na.rm = TRUE) 
+```
+
+*Save*
+```{r}
+save_directory <- "~/Desktop/LV-main/Final_Models/RF_Custom"
+
+file_path <- file.path(save_directory, "rf_custom_p05_resample.csv")
+write.csv(rf_custom_p05_resample, file = file_path, row.names = FALSE)
+
+file_path <- file.path(save_directory, "rf_custom_p05_auroc_importance.csv")
+write.csv(rf_custom_p05_auroc_importance, file = file_path, row.names = FALSE)
+
+file_path <- file.path(save_directory, "rf_custom_p05_auprc_importance.csv")
+write.csv(rf_custom_p05_auprc_importance, file = file_path, row.names = FALSE)
+
+file_path <- file.path(save_directory, "rf_custom_p05_best_predict.csv")
+write.csv(rf_custom_p05_best_predict, file = file_path, row.names = FALSE)
+
+file_path <- file.path(save_directory, "rf_custom_p05_repeat_auprc.csv")
+write.csv(rf_custom_p05_repeat_auprc, file = file_path, row.names = FALSE)
+```
+
+#RF Weighted 4 Custom (p < 0.05)
+*Training*
+```{r}
+mtry_p05 <- floor(sqrt(32)) #5
+table(cessationtrain_p05_final$QuA1Rc)
+
+n_fold <- 5
+n_repeat <- 5
+n_tune <- 64
+n_resample <- n_fold * n_repeat
+
+set.seed(seed)
+seeds <- vector("list", length = n_resample + 1)
+for (i in seq_len(n_resample)) {
+  seeds[[i]] <- sample.int(1e6, n_tune)
+}
+seeds[[n_resample + 1]] <- sample.int(1e6, 1)
+
+train_ctrl <- trainControl(
+  method = "repeatedcv",       
+  index = manual_folds_p05,           
+  seeds = seeds,               
+  classProbs = TRUE,
+  summaryFunction = prSummary,
+  savePredictions = "all"
+)
+
+set.seed(seed)
+rf_weight4_custom_p05 <- train(
+  rf_recipe_p05,
+  data = cessationtrain_p05_final,
+  method = random_forest_custom,
+  metric = "F",
+  tuneGrid = expand.grid(mtry = c(2, 3, 4, 5, 6, 7, 8, 9, 10), ntree = c(100, 300, 500, 700, 900, 1100, 1300)),
+  trControl = train_ctrl, 
+  classwt = c("X1" = 4, "X2" = 1))
+
+print(rf_weight4_custom_p05$bestTune) #mtry = 8, ntree = 300
+rf_weight4_custom_p05_best_predict <- subset(rf_weight4_custom_p05$pred, mtry == rf_weight4_custom_p05$bestTune$mtry & ntree == rf_weight4_custom_p05$bestTune$ntree)
+rf_weight4_custom_p05_predict <- subset(rf_weight4_custom_p05$pred)
+rf_weight4_custom_p05_resample <- rf_weight4_custom_p05$resample
+confusionMatrix(rf_weight4_custom_p05_best_predict$pred, rf_weight4_custom_p05_best_predict$obs)
+rf_weight4_custom_p05_final_model <- rf_weight4_custom_p05$finalModel
+print(rf_weight4_custom_p05_final_model)
+rf_weight4_custom_p05_result <- rf_weight4_custom_p05$results
+```
+
+*Fitting*
+```{r}
+train_ctrl <- trainControl(
+  method = 'none',
+  classProbs = TRUE,
+  summaryFunction = prSummary,
+  savePredictions = "all"
+)
+
+set.seed(seed)
+rf_weight4_custom_final_p05 <- train(
+  rf_recipe_p05,
+  data = cessationtrain_p05_final, 
+  method = random_forest_custom, 
+  metric ="F", 
+  tuneGrid = expand.grid(mtry=4, ntree=100), 
+  trControl = train_ctrl
+)
+
+rf_weight4_custom_final_p05_final_model <- rf_weight4_custom_final_p05$finalModel
+print(rf_weight4_custom_final_p05_final_model)
+```
+
+*Testing*
+```{r}
+rf_weight4_custom_p05_train_predict <- predict(rf_weight4_custom_final_p05, newdata = cessationtrain_p05_final)
+rf_weight4_custom_p05_test_predict <- predict(rf_weight4_custom_final_p05, newdata = cessationtest_p05_final)
+
+confusionMatrix(rf_weight4_custom_p05_train_predict, cessationtrain_p05_final$QuA1Rc)
+confusionMatrix(rf_weight4_custom_p05_test_predict, cessationtest_p05_final$QuA1Rc)
+```
+
+*AUPRC: Train and Test Point Estimates*
+```{r}
+train_probs <- predict(rf_weight4_custom_final_p05, newdata = cessationtrain_p05_final, type = "prob")[, "X1"]
+test_probs <- predict(rf_weight4_custom_final_p05, newdata = cessationtest_p05_final, type = "prob")[, "X1"]
+
+train_obs <- factor(cessationtrain_p05_final$QuA1Rc, levels = c("X2", "X1"), labels = c("no", "yes"))
+test_obs <- factor(cessationtest_p05_final$QuA1Rc, levels = c("X2", "X1"), labels = c("no", "yes"))
+
+#calculate PR curves
+pr_train <- pr.curve(scores.class0 = train_probs[train_obs == "yes"],
+                     scores.class1 = train_probs[train_obs == "no"],
+                     curve = TRUE)
+
+pr_test <- pr.curve(scores.class0 = test_probs[test_obs == "yes"],
+                    scores.class1 = test_probs[test_obs == "no"],
+                    curve = TRUE)
+
+#graph training and testing PRCs
+pr_train_df <- as.data.frame(pr_train$curve)
+colnames(pr_train_df) <- c("Recall", "Precision", "Threshold")
+pr_train_df$Set <- "Train"
+pr_test_df <- as.data.frame(pr_test$curve)
+colnames(pr_test_df) <- c("Recall", "Precision", "Threshold")
+pr_test_df$Set <- "Test"
+pr_df <- bind_rows(pr_train_df, pr_test_df)
+baseline_train <- mean(pr_train_df$Precision)
+baseline_test <- mean(pr_test_df$Precision)
+auprc_values <- data.frame(
+  Set = c("Train", "Test"),
+  AUPRC = c(pr_train$auc.integral, pr_test$auc.integral))
+
+ggplot(pr_df, aes(x = Recall, y = Precision, color = Set)) +
+  geom_line(size = 1.2) +
+  geom_hline(yintercept = baseline_train, linetype = "dashed", color = "blue") +
+  geom_hline(yintercept = baseline_test, linetype = "dashed", color = "red") +
+  annotate("text", x = 0.01, y = baseline_train + 0.02, label = "Train Baseline", 
+           hjust = 0, color = "blue", size = 4) +
+  annotate("text", x = 0.01, y = baseline_test + 0.02, label = "Test Baseline", 
+           hjust = 0, color = "red", size = 4) +
+  scale_color_manual(values = c("Train" = "blue", "Test" = "red")) +
+  labs(
+    title = "RF Weighted Precision-Recall Curves: Train vs. Test",
+    subtitle = paste0("Train AUPRC = ", round(pr_train$auc.integral, 2),
+                      ", Test AUPRC = ", round(pr_test$auc.integral, 2)),
+    y = "Precision",
+    x = "Recall",
+    color = "Data Split") +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"))
+
+#table of AUCs by resampling
+rf_weight4_custom_p05_auprc <- rf_weight4_custom_p05_best_predict %>%
+  mutate(rep = sub(".*\\.(Rep\\d+)", "\\1", Resample))
+
+rf_weight4_custom_p05_repeat_auprc <- rf_weight4_custom_p05_auprc %>%
+  group_by(rep) %>%
+  summarise(auprc = pr.curve(
+      scores.class0 = X1[obs == "X1"],
+      scores.class1 = X1[obs == "X2"],
+      curve = FALSE)$auc.integral)
+```
+
+*Bootstrap: Testing AUPRC and Brier*
+```{r}
+#bootstrap
+test_labels <- data.frame(
+  obs = test_obs, # factor: "no"/"yes"
+  prob_yes = test_probs, # numeric: P("yes")
+  outcome = as.numeric(test_obs == "yes")) # 1 = yes, 0 = no
+strata <- as.numeric(test_labels$obs) # 1 = yes, 0 = no
+
+pos_class <- "yes"
+neg_class <- "no"
+
+#AUPRC
+auprc_stat <- function(data, indices) {
+  d <- data[indices, ]
+  pr <- pr.curve(
+    scores.class0 = d$prob_yes[d$obs == pos_class],
+    scores.class1 = d$prob_yes[d$obs == neg_class],
+    curve = FALSE
+  )
+  pr$auc.integral
+} 
+
+set.seed(843)
+boot_out <- boot(data = test_labels, statistic = auprc_stat, R = 2000, strata = strata)
+boot_out$t0 #0.4731348        
+boot.ci(boot_out, type = c("perc", "bca")) #CI95%   ( 0.2136,  0.7463 )
+
+#Brier
+brier_stat <- function(data, indices) {
+  d <- data[indices, ]
+  mean((d$prob_yes - d$outcome)^2)}
+
+set.seed(843)
+boot_brier <- boot(data = test_labels, statistic = brier_stat, R = 2000, strata = strata)
+boot_brier$t0 #0.1363874                
+boot.ci(boot_brier, type = c("perc", "bca")) #CI95%   ( 0.0981,  0.1764 )
+```
+
+*Calibration Curve*
+```{r}
+n_bins <- 10  
+bin_breaks <- seq(0, 1, length.out = n_bins + 1)
+
+test_labels <- test_labels %>%
+  mutate(bin = cut(prob_yes, breaks = bin_breaks, include.lowest = TRUE))
+
+calib_df <- test_labels %>%
+  group_by(bin, .drop = FALSE) %>%  # keep empty bins so bootstrap columns align
+  summarise(
+    mean_pred = mean(prob_yes),
+    mean_obs = mean(outcome),
+    nb = n(),
+    .groups = "drop")
+
+print(calib_df)
+
+calib_stat <- function(data, indices) {
+  d <- data[indices, ]
+  d$bin <- cut(d$prob_yes, breaks = bin_breaks, include.lowest = TRUE)
+  sapply(levels(d$bin), function(b) {
+    obs_in_bin <- d$outcome[d$bin == b]
+    if (length(obs_in_bin) == 0) return(NA_real_)
+    mean(obs_in_bin)})}
+
+set.seed(843)
+boot_calib <- boot(data = test_labels, statistic = calib_stat, R = 2000, strata = strata)
+
+calib_ci <- data.frame(
+  bin   = levels(test_labels$bin),
+  lower = apply(boot_calib$t, 2, quantile, probs = 0.025, na.rm = TRUE),
+  upper = apply(boot_calib$t, 2, quantile, probs = 0.975, na.rm = TRUE))
+
+calib_df <- calib_df %>%
+  mutate(bin = as.character(bin)) %>%
+  left_join(calib_ci, by = "bin")
+
+# sanity check: how many bootstrap resamples had a missing/empty bin?
+colSums(is.na(boot_calib$t))
+
+# calibration curve with 95% bootstrap CI band
+ggplot(calib_df, aes(x = mean_pred, y = mean_obs)) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), fill = "steelblue", alpha = 0.2) +
+  geom_point(aes(size = nb), color = "steelblue") +
+  geom_line(color = "steelblue") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray40") +
+  labs(x = "Mean Predicted Probability", y = "Observed Proportion",
+       title = "Calibration Curve with 95% Bootstrap CI",
+       size = "Bin N") +
+  theme_minimal(base_size = 14)
+
+range(calib_df$mean_pred, na.rm = TRUE) 
+```
+
+*Feature Importance*
+```{r}
+rf_weight4_custom_p05_auroc_importance <- varImp(rf_weight4_custom_final_p05)$importance
+
+rf_weight4_custom_p05_auprc_importance <- auprc_feature_importance_repeated(
+  model = rf_weight4_custom_final_p05,
+  data = cessationtrain_p05_final,
+  target_col = "QuA1Rc",
+  positive_class = "X1",
+  n_repeats = 100)
+
+print(rf_weight4_custom_p05_auprc_importance$summary)
+```
+
+*Save*
+```{r}
+save_directory <- "~/Desktop/LV-main/Final_Models/RF_Weighted4_Custom"
+
+file_path <- file.path(save_directory, "rf_weight4_custom_p05_resample.csv")
+write.csv(rf_weight4_custom_p05_resample, file = file_path, row.names = FALSE)
+
+file_path <- file.path(save_directory, "rf_weight4_custom_p05_auroc_importance.csv")
+write.csv(rf_weight4_custom_p05_auroc_importance, file = file_path, row.names = FALSE)
+
+file_path <- file.path(save_directory, "rf_weight4_custom_p05_auprc_importance.csv")
+write.csv(rf_weight4_custom_p05_auprc_importance, file = file_path, row.names = FALSE)
+
+file_path <- file.path(save_directory, "rf_weight4_custom_p05_best_predict.csv")
+write.csv(rf_weight4_custom_p05_best_predict, file = file_path, row.names = FALSE)
+
+file_path <- file.path(save_directory, "rf_weight4_custom_p05_repeat_auprc.csv")
+write.csv(rf_weight4_custom_p05_repeat_auprc, file = file_path, row.names = FALSE)
+```
+
